@@ -1,0 +1,611 @@
+import sys, os, json, base64, requests
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QComboBox,
+    QPushButton, QLabel, QGroupBox, QSizePolicy, QGridLayout, QTextEdit,
+    QDialog, QListWidget, QAbstractItemView, QCheckBox
+)
+from PyQt5.QtWebEngineWidgets import QWebEngineView
+from PyQt5.QtCore import QUrl, QTimer, Qt, QObject, pyqtSlot
+from PyQt5.QtWebChannel import QWebChannel
+
+SEARCH_FIELDS_ORDER = ["Player", "Fight Number", "Result", "Team"]
+SELECTORS = {
+    "Player": "select[name=playerid]",
+    "Fight Number": "select[name=position]",
+    "Result": "select[name=eventdetail]",
+    "Team": "select[name=teamid]",
+}
+LOGIN_STORE_FILE = "login.json"
+
+def load_login():
+    if os.path.exists(LOGIN_STORE_FILE):
+        try:
+            with open(LOGIN_STORE_FILE, "r") as f:
+                data = json.load(f)
+            user = data.get("username", "")
+            pw = base64.b64decode(data.get("password", "")).decode("utf-8") if data.get("password") else ""
+            remember = data.get("remember", False)
+            return user, pw, remember
+        except Exception:
+            return "", "", False
+    return "", "", False
+
+def save_login(user, pw, remember):
+    try:
+        if remember:
+            data = {
+                "username": user,
+                "password": base64.b64encode(pw.encode("utf-8")).decode("utf-8"),
+                "remember": True
+            }
+            with open(LOGIN_STORE_FILE, "w") as f:
+                json.dump(data, f)
+        else:
+            if os.path.exists(LOGIN_STORE_FILE):
+                os.remove(LOGIN_STORE_FILE)
+    except Exception:
+        pass
+
+class OptionDialog(QDialog):
+    def __init__(self, title, options, initial_text="", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Choisir {title}")
+        self.resize(350, 400)
+        layout = QVBoxLayout(self)
+        self.filter_edit = QLineEdit(self)
+        self.filter_edit.setPlaceholderText("Filtrer…")
+        self.list_widget = QListWidget(self)
+        self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list_widget.addItems(options)
+        layout.addWidget(self.filter_edit)
+        layout.addWidget(self.list_widget)
+        self.result = None
+        self.list_widget.itemDoubleClicked.connect(self.accept_choice)
+        self.list_widget.itemClicked.connect(self.on_click)
+        self.filter_edit.textChanged.connect(self.filter_list)
+        self.filter_edit.returnPressed.connect(self.try_accept_enter)
+        self.list_widget.setFocus()
+        self.filter_edit.setText(initial_text)
+        if initial_text:
+            self.filter_list(initial_text)
+    def filter_list(self, text):
+        any_visible = False
+        text_lower = text.lower()
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            visible = text_lower in item.text().lower()
+            item.setHidden(not visible)
+            any_visible = any_visible or visible
+        if any_visible:
+            for i in range(self.list_widget.count()):
+                item = self.list_widget.item(i)
+                if not item.isHidden():
+                    self.list_widget.setCurrentItem(item)
+                    break
+    def on_click(self, item):
+        self.result = item.text()
+    def try_accept_enter(self):
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if not item.isHidden():
+                self.result = item.text()
+                self.accept()
+                return
+    def accept_choice(self, item):
+        self.result = item.text()
+        self.accept()
+    def get_choice(self):
+        if self.exec_() == QDialog.Accepted and self.result:
+            return self.result
+        return None
+
+class EventSearchDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Recherche multicritère événements WWE (année, show, ville, ...)")
+        self.resize(670, 520)
+        layout = QVBoxLayout(self)
+        self.filter_edit = QLineEdit(self)
+        self.filter_edit.setPlaceholderText("Tape : année, show, ville, mot-clé... (ex: raw 2025 smackdown wwe 2019 new york)")
+        self.list_widget = QListWidget(self)
+        layout.addWidget(self.filter_edit)
+        layout.addWidget(self.list_widget)
+        self.result = None
+        self.filter_edit.textChanged.connect(self.apply_filter)
+        self.list_widget.itemDoubleClicked.connect(self.accept_choice)
+        self.filter_edit.returnPressed.connect(self.try_accept_enter)
+        self.all_events = []
+        self.load_events()
+
+    def load_events(self):
+        self.list_widget.clear()
+        self.list_widget.addItem("Chargement des événements WWE (20-40s la première fois)...")
+        QApplication.processEvents()
+        ids = [4444, 4425, 4426, 4414, 4429, 4445, 4473]
+        all_events = []
+        for lid in ids:
+            for year in range(1993, 2026):
+                url = f"https://www.thesportsdb.com/api/v1/json/123/eventsseason.php?id={lid}&s={year}"
+                try:
+                    r = requests.get(url, timeout=12)
+                    data = r.json()
+                    if data and data.get("events"):
+                        all_events.extend(data["events"])
+                except Exception:
+                    continue
+        uniq = {}
+        for e in all_events:
+            if e and "idEvent" in e:
+                uniq[e["idEvent"]] = e
+        self.all_events = list(uniq.values())
+        self.apply_filter()
+
+    def apply_filter(self):
+        query = self.filter_edit.text().lower().strip()
+        terms = [x for x in query.split() if x]
+        self.list_widget.clear()
+        count = 0
+        for e in self.all_events:
+            fields = [
+                e.get("strEvent",""), e.get("strLeague",""), e.get("strSeason",""),
+                e.get("strCity",""), e.get("strVenue",""), e.get("dateEvent","")
+            ]
+            all_txt = " ".join([str(f).lower() for f in fields])
+            match = all(term in all_txt for term in terms)
+            if match:
+                name = e.get("strEvent","")
+                league = e.get("strLeague","")
+                date = e.get("dateEvent","")
+                city = e.get("strCity","")
+                venue = e.get("strVenue","")
+                idevt = e.get("idEvent","")
+                s = f"{name} | {date} | {league} | {city}{' | ' + venue if venue else ''} | id:{idevt}"
+                self.list_widget.addItem(s)
+                count += 1
+        if count == 0:
+            self.list_widget.addItem("Aucun résultat...")
+
+    def try_accept_enter(self):
+        idx = self.list_widget.currentRow()
+        if idx >= 0 and self.list_widget.count() > idx:
+            txt = self.list_widget.item(idx).text()
+            if "| id:" in txt:
+                idevt = txt.split("| id:")[-1].strip()
+                self.result = {"idEvent": idevt}
+                self.accept()
+
+    def accept_choice(self, item):
+        txt = item.text()
+        if "| id:" in txt:
+            idevt = txt.split("| id:")[-1].strip()
+            self.result = {"idEvent": idevt}
+            self.accept()
+
+    def get_choice(self):
+        if self.exec_() == QDialog.Accepted and self.result:
+            return self.result
+        return None
+
+class SyncAPI(QObject):
+    def __init__(self, parent):
+        super().__init__()
+        self.parent = parent
+    @pyqtSlot(str, str)
+    def set_search_field(self, field, txt):
+        edit = self.parent.search_fields.get(field)
+        # Pour QComboBox : setCurrentText
+        if field == "Fight Number" and isinstance(edit, QComboBox):
+            if edit.currentText() != txt:
+                edit.blockSignals(True)
+                edit.setCurrentText(txt)
+                edit.blockSignals(False)
+                self.parent.log_action(f"{field} synchronisé → {txt}")
+        elif edit and edit.text() != txt:
+            edit.blockSignals(True)
+            edit.setText(txt)
+            edit.blockSignals(False)
+            self.parent.log_action(f"{field} synchronisé → {txt}")
+
+class WWEApp(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("WWE - Connexion + Navigateur intégré")
+        self.setGeometry(100, 100, 1500, 900)
+
+        self.username = ""
+        self.password = ""
+        self.login_triggered = False
+        self.profile_redirected = False
+
+        main_layout = QVBoxLayout()
+        form_layout = QHBoxLayout()
+
+        # --- Authentification ---
+        login_group = QGroupBox("Authentification")
+        login_layout = QVBoxLayout()
+        self.username_input = QLineEdit()
+        self.username_input.setPlaceholderText("Nom d'utilisateur")
+        self.password_input = QLineEdit()
+        self.password_input.setPlaceholderText("Mot de passe")
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.remember_checkbox = QCheckBox("Mémoriser identifiants")
+        self.login_button = QPushButton("Connexion automatique")
+        self.login_status = QLabel("🔒 Non connecté")
+        self.login_button.clicked.connect(self.prepare_login)
+        self.username_input.returnPressed.connect(self.prepare_login)
+        self.password_input.returnPressed.connect(self.prepare_login)
+        login_layout.addWidget(self.username_input)
+        login_layout.addWidget(self.password_input)
+        login_layout.addWidget(self.remember_checkbox)
+        login_layout.addWidget(self.login_button)
+        login_layout.addWidget(self.login_status)
+        login_group.setLayout(login_layout)
+
+        user, pw, remember = load_login()
+        self.username_input.setText(user)
+        self.password_input.setText(pw)
+        self.remember_checkbox.setChecked(remember)
+
+        # --- Événement ---
+        event_group = QGroupBox("Événement")
+        event_layout = QVBoxLayout()
+        event_row = QHBoxLayout()
+        self.event_input = QLineEdit()
+        self.event_input.setPlaceholderText("ID événement (ex: 2264491)")
+        self.load_event_button = QPushButton("Accéder à l'événement")
+        self.event_search_btn = QPushButton("Chercher événement")
+        self.event_status = QLabel("")
+        self.load_event_button.clicked.connect(self.load_event)
+        self.event_input.returnPressed.connect(self.load_event)
+        self.event_search_btn.clicked.connect(self.open_event_search)
+        event_row.addWidget(self.event_input)
+        event_row.addWidget(self.load_event_button)
+        event_row.addWidget(self.event_search_btn)
+        event_layout.addLayout(event_row)
+        event_layout.addWidget(self.event_status)
+        event_group.setLayout(event_layout)
+
+        # --- Recherche rapide ---
+        search_group = QGroupBox("Recherche rapide")
+        search_layout = QGridLayout()
+        self.search_fields = {}
+        self.search_buttons = {}
+        for idx, field in enumerate(SEARCH_FIELDS_ORDER):
+            label = QLabel(field)
+            if field == "Fight Number":
+                edit = QComboBox()
+                edit.setEditable(True)
+                edit.addItems([str(i) for i in range(1, 51)])
+                edit.setInsertPolicy(QComboBox.NoInsert)
+                edit.setCurrentIndex(-1)
+                btn = QPushButton("🔍")
+                btn.setFixedWidth(30)
+                self.search_fields[field] = edit
+                self.search_buttons[field] = btn
+                edit.lineEdit().returnPressed.connect(lambda f=field: self.try_select_or_popup(f))
+                btn.clicked.connect(lambda _, f=field: self.show_dropdown_popup(f))
+                search_layout.addWidget(label, idx, 0)
+                search_layout.addWidget(edit, idx, 1)
+                search_layout.addWidget(btn, idx, 2)
+            else:
+                edit = QLineEdit()
+                edit.setPlaceholderText(f"Recherche {field}")
+                btn = QPushButton("🔍")
+                btn.setFixedWidth(30)
+                self.search_fields[field] = edit
+                self.search_buttons[field] = btn
+                edit.returnPressed.connect(lambda f=field: self.try_select_or_popup(f))
+                btn.clicked.connect(lambda _, f=field: self.show_dropdown_popup(f))
+                search_layout.addWidget(label, idx, 0)
+                search_layout.addWidget(edit, idx, 1)
+                search_layout.addWidget(btn, idx, 2)
+        self.reset_button = QPushButton("Réinitialiser")
+        self.reset_button.clicked.connect(self.reset_dropdowns)
+        search_layout.addWidget(self.reset_button, len(SEARCH_FIELDS_ORDER), 0, 1, 3)
+        search_group.setLayout(search_layout)
+
+        form_layout.addWidget(login_group)
+        form_layout.addWidget(event_group)
+        form_layout.addWidget(search_group)
+
+        # --- BARRE URL AVEC BOUTONS PRECEDENT/SUIVANT + TOGGLE LOGS ---
+        url_bar_layout = QHBoxLayout()
+        self.prev_btn = QPushButton("⏪")
+        self.next_btn = QPushButton("⏩")
+        self.prev_btn.setFixedWidth(35)
+        self.next_btn.setFixedWidth(35)
+        self.prev_btn.setToolTip("Page précédente")
+        self.next_btn.setToolTip("Page suivante")
+        url_label = QLabel("🔗 URL actuelle :")
+        self.url_display = QLineEdit()
+        self.url_display.setReadOnly(True)
+        self.url_display.setMaximumHeight(22)
+        self.toggle_logs_btn = QPushButton("📝 Afficher/Masquer logs")
+        self.toggle_logs_btn.setFixedWidth(140)
+        self.toggle_logs_btn.setCheckable(True)
+        self.toggle_logs_btn.setChecked(True)
+        self.toggle_logs_btn.toggled.connect(self.toggle_logs_visible)
+        url_bar_layout.addWidget(self.prev_btn)
+        url_bar_layout.addWidget(self.next_btn)
+        url_bar_layout.addWidget(url_label)
+        url_bar_layout.addWidget(self.url_display)
+        url_bar_layout.addWidget(self.toggle_logs_btn)
+
+        self.browser = QWebEngineView()
+        self.browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.browser.urlChanged.connect(self.update_url_label)
+        self.browser.loadFinished.connect(self.on_page_loaded)
+        self.browser.setUrl(QUrl("https://www.thesportsdb.com/"))
+        self.prev_btn.clicked.connect(self.browser.back)
+        self.next_btn.clicked.connect(self.browser.forward)
+
+        self.log_box = QTextEdit()
+        self.log_box.setReadOnly(True)
+        self.log_box.setMaximumHeight(100)
+        self.log_box.setStyleSheet("font-family: Consolas, monospace; font-size: 11px; color: #006666; background: #f6f6f6;")
+        self.log_box.setVisible(True)
+
+        main_layout.addLayout(form_layout)
+        main_layout.addLayout(url_bar_layout)
+        main_layout.addWidget(self.browser)
+        main_layout.addWidget(QLabel("Journal des actions :"))
+        main_layout.addWidget(self.log_box)
+        self.setLayout(main_layout)
+
+        self.sync_js_installed = False
+
+    def toggle_logs_visible(self, checked):
+        self.log_box.setVisible(checked)
+
+    def log_action(self, msg):
+        self.log_box.append(msg)
+
+    def update_url_label(self, url):
+        self.url_display.setText(url.toString())
+
+    def prepare_login(self):
+        self.username = self.username_input.text().strip()
+        self.password = self.password_input.text().strip()
+        remember = self.remember_checkbox.isChecked()
+        save_login(self.username, self.password, remember)
+        if not self.username or not self.password:
+            self.login_status.setText("❌ Identifiants manquants")
+            self.log_action("❌ Tentative de connexion sans identifiants.")
+            return
+        self.login_triggered = True
+        self.profile_redirected = False
+        self.log_action(f"Tentative de connexion pour {self.username}")
+        self.browser.setUrl(QUrl("https://www.thesportsdb.com/user_login.php"))
+
+    def inject_login(self):
+        js_code = f"""
+        document.querySelector('input[name="username"]').value = "{self.username}";
+        document.querySelector('input[name="password"]').value = "{self.password}";
+        document.querySelector('input[type=submit]').click();
+        """
+        self.browser.page().runJavaScript(js_code)
+        self.log_action("🔄 Connexion automatique soumise.")
+        QTimer.singleShot(2000, self.redirect_to_profile)
+
+    def redirect_to_profile(self):
+        if not self.profile_redirected:
+            self.profile_redirected = True
+            self.browser.setUrl(QUrl(f"https://www.thesportsdb.com/user/{self.username}"))
+            self.log_action("Redirection vers le profil utilisateur.")
+
+    def on_page_loaded(self):
+        url = self.browser.url().toString()
+        self.log_action(f"Chargement de la page : {url}")
+        if self.login_triggered and "user_login.php" in url:
+            self.inject_login()
+            self.login_triggered = False
+        if f"/user/{self.username}" in url:
+            self.login_status.setText(f"🟢 Connecté : {self.username}")
+            self.log_action(f"✅ Connecté comme {self.username}")
+        elif "login" in url:
+            self.login_status.setText("🔒 Connexion requise")
+        if "edit_event_player_result.php" in url and not self.sync_js_installed:
+            QTimer.singleShot(700, self.inject_dropdown_sync_js)
+            self.sync_js_installed = True
+        elif "edit_event_player_result.php" not in url:
+            self.sync_js_installed = False
+
+    def open_event_search(self):
+        dialog = EventSearchDialog(self)
+        event = dialog.get_choice()
+        if event:
+            event_id = event.get("idEvent", "")
+            if event_id:
+                self.event_input.setText(str(event_id))
+                self.load_event()
+                self.log_action(f"✅ Événement sélectionné via recherche popup.")
+
+    def show_dropdown_popup(self, field):
+        selector = SELECTORS[field]
+        js = f"""
+        (function(){{
+            var sel = document.querySelector('{selector}');
+            var arr = [];
+            if (sel) {{
+                for(var i=0;i<sel.options.length;++i){{
+                    arr.push(sel.options[i].text);
+                }}
+            }}
+            return arr;
+        }})()
+        """
+        def after_options(options):
+            if options and options[0].lower().startswith("choose"):
+                options = options[1:]
+            # Get current text from combobox or lineedit
+            widget = self.search_fields[field]
+            if field == "Fight Number" and isinstance(widget, QComboBox):
+                initial_text = widget.currentText().strip()
+            else:
+                initial_text = widget.text().strip()
+            dialog = OptionDialog(field, options, initial_text, self)
+            choice = dialog.get_choice()
+            if choice:
+                if field == "Fight Number" and isinstance(widget, QComboBox):
+                    widget.setCurrentText(choice)
+                else:
+                    widget.setText(choice)
+                self.search_and_select_dropdown(field)
+                self.log_action(f"🟢 '{choice}' sélectionné dans {field} via popup.")
+        self.browser.page().runJavaScript(js, after_options)
+
+    def try_select_or_popup(self, field):
+        widget = self.search_fields[field]
+        if field == "Fight Number" and isinstance(widget, QComboBox):
+            txt = widget.currentText().strip()
+        else:
+            txt = widget.text().strip()
+        selector = SELECTORS[field]
+        def after_js(found):
+            if found:
+                self.log_action(f"✅ '{txt}' trouvé et sélectionné pour {field} (Entrée)")
+            else:
+                self.show_dropdown_popup(field)
+        js = f"""
+        (function(){{
+            function normalize(str) {{
+                return str.toLowerCase()
+                    .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+                    .replace(/['"\\s]/g, '');
+            }}
+            var input = normalize("{txt}");
+            var sel = document.querySelector('{selector}');
+            var found = false;
+            if (sel && sel.options.length > 1) {{
+                for (var i=0; i<sel.options.length; ++i) {{
+                    var opt = sel.options[i];
+                    if (normalize(opt.text).includes(input)) {{
+                        sel.selectedIndex = i;
+                        sel.dispatchEvent(new Event('change'));
+                        found = true;
+                        break;
+                    }}
+                }}
+                if (!found) {{
+                    sel.selectedIndex = 0;
+                    sel.dispatchEvent(new Event('change'));
+                }}
+                return found;
+            }} else {{
+                return false;
+            }}
+        }})()
+        """
+        self.browser.page().runJavaScript(js, after_js)
+
+    def search_and_select_dropdown(self, field):
+        widget = self.search_fields[field]
+        if field == "Fight Number" and isinstance(widget, QComboBox):
+            txt = widget.currentText().strip()
+        else:
+            txt = widget.text().strip()
+        selector = SELECTORS[field]
+        js = f"""
+        (function(){{
+            function normalize(str) {{
+                return str.toLowerCase()
+                    .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+                    .replace(/['"\\s]/g, '');
+            }}
+            var input = normalize("{txt}");
+            var sel = document.querySelector('{selector}');
+            var found = false;
+            if (sel && sel.options.length > 1) {{
+                for (var i=0; i<sel.options.length; ++i) {{
+                    var opt = sel.options[i];
+                    if (normalize(opt.text).includes(input)) {{
+                        sel.selectedIndex = i;
+                        sel.dispatchEvent(new Event('change'));
+                        found = true;
+                        break;
+                    }}
+                }}
+                if (!found) {{
+                    sel.selectedIndex = 0;
+                    sel.dispatchEvent(new Event('change'));
+                }}
+                return found;
+            }} else {{
+                return false;
+            }}
+        }})()
+        """
+        def on_result(found):
+            pass
+        self.browser.page().runJavaScript(js, on_result)
+
+    def inject_dropdown_sync_js(self):
+        sync_js = ""
+        for field in SEARCH_FIELDS_ORDER:
+            selector = SELECTORS[field]
+            sync_js += f"""
+            (function(){{
+                var sel = document.querySelector('{selector}');
+                if (!sel) return;
+                sel.addEventListener('change', function(){{
+                    var txt = sel.options[sel.selectedIndex].text;
+                    if(window.channel && window.channel.objects && window.channel.objects.api){{
+                        window.channel.objects.api.set_search_field('{field}', txt);
+                    }}
+                }});
+            }})();
+            """
+        channel = QWebChannel(self.browser.page())
+        api = SyncAPI(self)
+        channel.registerObject('api', api)
+        self.browser.page().setWebChannel(channel)
+        self.browser.page().runJavaScript("""
+        if (!window.channel) {
+            window.channel = new QWebChannel(qt.webChannelTransport, function(channel) {
+                window.channel = channel;
+            });
+        }
+        """)
+        self.browser.page().runJavaScript(sync_js)
+        self.log_action("🔁 Synchronisation dropdown/texte activée.")
+
+    def reset_dropdowns(self):
+        for field in SEARCH_FIELDS_ORDER:
+            selector = SELECTORS[field]
+            js = f"""
+            var sel = document.querySelector('{selector}');
+            if (sel) {{
+                sel.selectedIndex = 0;
+                sel.dispatchEvent(new Event('change'));
+            }}
+            """
+            self.browser.page().runJavaScript(js)
+            edit = self.search_fields.get(field)
+            if edit:
+                if field == "Fight Number" and isinstance(edit, QComboBox):
+                    edit.blockSignals(True)
+                    edit.setCurrentIndex(-1)
+                    edit.setEditText("")
+                    edit.blockSignals(False)
+                else:
+                    edit.blockSignals(True)
+                    edit.setText("")
+                    edit.blockSignals(False)
+        self.log_action("↩️ Tous les menus et champs réinitialisés.")
+
+    def load_event(self):
+        event_id = self.event_input.text().strip()
+        if not event_id.isdigit():
+            self.event_status.setText("❌ ID événement invalide.")
+            self.log_action("❌ ID événement invalide")
+            return
+        url = f"https://www.thesportsdb.com/edit_event_player_result.php?e={event_id}"
+        self.browser.setUrl(QUrl(url))
+        self.event_status.setText(f"✅ Événement {event_id} chargé.")
+        self.log_action(f"Ouverture de l'événement {event_id}")
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = WWEApp()
+    window.show()
+    sys.exit(app.exec_())
