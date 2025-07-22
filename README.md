@@ -1,7 +1,7 @@
 
-# WWE Event Editor
+# TheSportsDB Tool
 
-> Application graphique tout-en-un pour gérer et éditer les événements WWE sur [TheSportsDB.com](https://www.thesportsdb.com), avec navigateur intégré, recherche avancée et bloc-notes.
+> Application graphique avancée pour gérer, rechercher et éditer des événements sportifs, équipes, joueurs et résultats sur [TheSportsDB.com](https://www.thesportsdb.com), avec navigateur intégré, recherche multicritère et bloc-notes.
 
 **Dépôt officiel :** [https://github.com/Madumtv/thesportdbtool](https://github.com/Madumtv/thesportdbtool)
 
@@ -10,13 +10,13 @@
 ## ✨ Fonctionnalités
 
 - **Connexion rapide** à TheSportsDB (identifiants mémorisés)
-- **Navigateur intégré** (`QWebEngineView`)
-- **Recherche multicritère WWE** (année, show, ville, mots-clés…)
-- **Recherche rapide** par joueur, numéro de match, résultat, équipe
-- **Saisie intelligente** (auto-synchro menu déroulant <-> champ texte)
-- **Bloc-notes texte brut**
-- **Journal des actions/logs**
-- **UI compacte et ergonomique**
+- **Navigateur intégré** (`QWebEngineView`) pour interagir avec le site et ses outils d’édition
+- **Recherche multicritère** sur les événements (année, compétition, ville, mots-clés…)
+- **Recherche rapide** par joueur, numéro de match, résultat, équipe, etc.
+- **Saisie intelligente** (auto-synchronisation entre menus déroulants et champs texte)
+- **Bloc-notes texte brut intégré**
+- **Journal des actions/logs** pour garder trace de toutes vos opérations
+- **Interface compacte et adaptable à tous les sports** référencés sur TheSportsDB
 
 ---
 
@@ -42,7 +42,7 @@ cd thesportdbtool
 ### 3. **(Optionnel) Créer un environnement virtuel**
 ```sh
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scriptsctivate
 ```
 
 ### 4. **Installer les dépendances**
