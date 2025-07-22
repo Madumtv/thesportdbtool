@@ -1,7 +1,7 @@
 import sys, os, json, base64, requests
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QComboBox,
-    QPushButton, QLabel, QGroupBox, QSizePolicy, QTextEdit,
+    QPushButton, QLabel, QGroupBox, QSizePolicy, QPlainTextEdit,
     QDialog, QListWidget, QAbstractItemView, QCheckBox, QGridLayout
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
@@ -346,10 +346,10 @@ class WWEApp(QWidget):
         search_group.setLayout(search_layout)
         search_group.setMaximumWidth(label_width + edit_width + btn_width + 30)
 
-        # Bloc bloc-notes
+        # Bloc bloc-notes **en texte brut**
         notepad_group = QGroupBox("Bloc-notes")
         notepad_layout = QVBoxLayout()
-        self.notepad = QTextEdit()
+        self.notepad = QPlainTextEdit()
         self.notepad.setPlaceholderText("Prends ici toutes tes notes, tu peux coller du texte brut…")
         self.notepad.setMaximumHeight(300)
         notepad_layout.addWidget(self.notepad)
@@ -401,7 +401,7 @@ class WWEApp(QWidget):
         logsbar_layout.addWidget(self.toggle_logs_btn)
         logsbar_layout.addWidget(self.quit_btn)
 
-        self.log_box = QTextEdit()
+        self.log_box = QPlainTextEdit()
         self.log_box.setReadOnly(True)
         self.log_box.setMaximumHeight(85)
         self.log_box.setStyleSheet("font-family: Consolas, monospace; font-size: 11px; color: #006666; background: #f6f6f6;")
@@ -421,7 +421,7 @@ class WWEApp(QWidget):
     def toggle_logs_visible(self, checked=None):
         self.log_box.setVisible(not self.log_box.isVisible())
     def log_action(self, msg):
-        self.log_box.append(msg)
+        self.log_box.appendPlainText(msg)
     def update_url_label(self, url):
         self.url_display.setText(url.toString())
     def prepare_login(self):
